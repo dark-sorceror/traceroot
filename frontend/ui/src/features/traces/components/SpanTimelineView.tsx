@@ -36,6 +36,7 @@ interface SpanTimelineViewProps {
   onScroll?: () => void;
   hoveredSpanId: string | null;
   onHoverChange: (id: string | null) => void;
+  liveNow?: number;
 }
 
 /**
@@ -57,6 +58,7 @@ export function SpanTimelineView({
   onScroll,
   hoveredSpanId,
   onHoverChange,
+  liveNow,
 }: SpanTimelineViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [timelineWidth, setTimelineWidth] = useState(800);
@@ -70,7 +72,10 @@ export function SpanTimelineView({
     return () => observer.disconnect();
   }, []);
 
-  const traceDurationMs = useMemo(() => Math.max(1, getTraceDuration(trace) ?? 1), [trace]);
+  const traceDurationMs = useMemo(
+    () => Math.max(1, getTraceDuration(trace) ?? 1),
+    [trace, liveNow],
+  );
 
   const ticks = useMemo(() => {
     const durationSec = traceDurationMs > 0 ? traceDurationMs / 1000 : 1;
@@ -95,8 +100,8 @@ export function SpanTimelineView({
     if (traceIsCollapsed) return [];
     // Must enrich here too so row count matches SpanTreeView (pending placeholders add rows)
     const enrichedSpans = enrichSpansWithPending(trace.spans);
-    return flattenTreeWithMetrics(enrichedSpans, collapsedIds, traceDurationMs, timelineWidth);
-  }, [trace.spans, collapsedIds, traceIsCollapsed, traceDurationMs, timelineWidth]);
+    return flattenTreeWithMetrics(enrichedSpans, collapsedIds, traceDurationMs, timelineWidth, liveNow);
+  }, [trace.spans, collapsedIds, traceIsCollapsed, traceDurationMs, timelineWidth, liveNow]);
 
   const allRows: TimelineRow[] = useMemo(
     () => [
@@ -282,7 +287,7 @@ export function SpanTimelineView({
                     )}
                   </span>
                 )}
-                {item.metrics.isInstant && !item.metrics.isInProgress ? (
+                {item.metrics.isInstant && !item.metrics.isInProgress && !item.metrics.isPending ? (
                   <div
                     className="absolute z-10 h-3 w-[2px] bg-muted-foreground/50 transition-colors"
                     style={{ left: `${item.metrics.startOffsetPx}px` }}
@@ -294,7 +299,7 @@ export function SpanTimelineView({
                       isError
                         ? "border-red-300 bg-red-100 dark:bg-red-950/60"
                         : "border-foreground/40 bg-foreground/[0.08]",
-                      item.metrics.isInProgress && "animate-pulse border-dashed opacity-70",
+                      (item.metrics.isInProgress || item.metrics.isPending) && "animate-pulse border-dashed opacity-70",
                       isSelected && "ring-1 ring-border",
                     )}
                     style={{

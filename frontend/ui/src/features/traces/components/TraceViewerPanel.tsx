@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Workflow,
@@ -14,7 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { getTrace } from "@/lib/api";
-import type { Span } from "@/types/api";
+import type { Span, TraceDetail } from "@/types/api";
 import type { TraceSelection } from "../types";
 import { SpanTreeView } from "./SpanTreeView";
 import { SpanInfoPanel } from "./SpanInfoPanel";
@@ -22,6 +22,12 @@ import { AiChatOverlay } from "@/features/ai-assistant/components/ai-chat-overla
 import { useTraceStream } from "../hooks/use-trace-stream";
 import { SpanTimelineView } from "./SpanTimelineView";
 import { buildSpanTree, enrichSpansWithPending, TREE_LAYOUT } from "../utils";
+
+function traceHasLiveSpans(trace: TraceDetail | undefined): boolean {
+  if (!trace) return false;
+
+  return trace.spans.some((span) => span.pending === true || span.span_end_time == null);
+}
 
 interface TraceViewerPanelProps {
   projectId: string;
@@ -73,6 +79,7 @@ export function TraceViewerPanel({
   const isSyncing = useRef(false);
 
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
+  const [liveNow, setLiveNow] = useState(() => Date.now());
 
   const {
     data: trace,
@@ -81,9 +88,31 @@ export function TraceViewerPanel({
   } = useQuery({
     queryKey: ["trace", projectId, traceId],
     queryFn: () => getTrace(projectId, traceId, ""),
+    refetchInterval: 5000,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
   });
 
   useTraceStream(projectId, traceId, true);
+
+  const spanById = useMemo(() => {
+    if (!trace) return new Map<string, Span>();
+
+    const spans = enrichSpansWithPending(trace.spans);
+    return new Map(spans.map((span) => [span.span_id, span]));
+  }, [trace]);
+
+  const hasLiveSpans = traceHasLiveSpans(trace);
+
+  useEffect(() => {
+    if (!hasLiveSpans) return;
+
+    const intervalId = window.setInterval(() => {
+      setLiveNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasLiveSpans]);
 
   // Reset when navigating to a different trace
   useEffect(() => {
@@ -123,19 +152,19 @@ export function TraceViewerPanel({
   }, []);
 
   const isSpanVisible = useCallback(
-    (span: Span, spans: Span[]) => {
+    (span: Span) => {
       let currentId = span.parent_span_id;
 
       while (currentId) {
         if (collapsedIds.has(currentId)) return false;
 
-        const parent = spans.find((s) => s.span_id === currentId);
+        const parent = spanById.get(currentId);
         currentId = parent?.parent_span_id ?? null;
       }
 
       return true;
     },
-    [collapsedIds],
+    [collapsedIds, spanById],
   );
 
   /**
@@ -150,7 +179,7 @@ export function TraceViewerPanel({
 
       if (sel.type === "span" && trace) {
         const spans = enrichSpansWithPending(trace.spans);
-        const rows = buildSpanTree(spans).filter((row) => isSpanVisible(row.span, spans));
+        const rows = buildSpanTree(spans).filter((row) => isSpanVisible(row.span));
         const rowIdx = rows.findIndex((r) => r.span.span_id === sel.span.span_id);
         if (rowIdx !== -1) {
           // +1 because row 0 in the tree is the trace root
@@ -314,6 +343,7 @@ export function TraceViewerPanel({
                 onScroll={handleTimelineScroll}
                 hoveredSpanId={hoveredSpanId}
                 onHoverChange={setHoveredSpanId}
+                liveNow={liveNow}
               />
             </div>
           )}

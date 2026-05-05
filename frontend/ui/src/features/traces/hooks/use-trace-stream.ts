@@ -34,6 +34,7 @@ export function useTraceStream(
   const queryClient = useQueryClient();
   const [isStreaming, setIsStreaming] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const refetchTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!enabled || !projectId || !traceId) {
@@ -53,7 +54,7 @@ export function useTraceStream(
 
         setIsStreaming(true);
 
-        queryClient.setQueryData<TraceDetail>(["trace", projectId, traceId], (prev) => {
+        queryClient.setQueryData<TraceDetail>(["trace", projectId, traceId], (prev: TraceDetail | undefined) => {
           if (!prev) return prev;
           const merged = mergeSpans(prev.spans, newSpans);
           return {
@@ -66,13 +67,42 @@ export function useTraceStream(
       }
     });
 
-    es.addEventListener("trace_complete", () => {
+    es.addEventListener("trace_complete", (event) => {
       setIsStreaming(false);
+
+      try {
+        const data = JSON.parse(event.data || "{}");
+        const finalSpans: Span[] = data.spans ?? [];
+
+        if (finalSpans.length > 0) {
+          queryClient.setQueryData<TraceDetail>(["trace", projectId, traceId], (prev: TraceDetail | undefined) => {
+            if (!prev) return prev;
+            const merged = mergeSpans(prev.spans, finalSpans);
+            return {
+              ...prev,
+              spans: enrichSpansWithPending(merged),
+            };
+          });
+        }
+      } catch {
+        // Completion events may not include JSON payloads.
+      }
+
       es.close();
       eventSourceRef.current = null;
 
-      // Refetch to get the final consistent state from ClickHouse
-      queryClient.invalidateQueries({ queryKey: ["trace", projectId, traceId] });
+      // Refetch immediately, then once more shortly after to avoid racing ClickHouse insertion.
+      void queryClient.invalidateQueries({
+        queryKey: ["trace", projectId, traceId],
+        refetchType: "active",
+      });
+
+      refetchTimerRef.current = window.setTimeout(() => {
+        void queryClient.invalidateQueries({
+          queryKey: ["trace", projectId, traceId],
+          refetchType: "active",
+        });
+      }, 500);
     });
 
     es.onerror = () => {
@@ -83,6 +113,10 @@ export function useTraceStream(
       es.close();
       eventSourceRef.current = null;
       setIsStreaming(false);
+      if (refetchTimerRef.current != null) {
+        window.clearTimeout(refetchTimerRef.current);
+        refetchTimerRef.current = null;
+      }
     };
   }, [projectId, traceId, enabled, queryClient]);
 

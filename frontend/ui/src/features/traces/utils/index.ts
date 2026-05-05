@@ -6,7 +6,7 @@ import type { Span, TraceDetail } from "@/types/api";
 import type { SpanTreeRow } from "../types";
 import { parseAsUTC } from "@/lib/utils";
 
-function parseTimestamp(ts: string): number {
+export function parseTimestamp(ts: string): number {
   return parseAsUTC(ts).getTime();
 }
 
